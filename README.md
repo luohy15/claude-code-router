@@ -86,6 +86,7 @@ ccr code
 
 - [x] Support change models
 - [x] Github Actions
+- [x] Prompt cache support
 - [ ] More robust plugin support
 - [ ] More detailed logs
 
