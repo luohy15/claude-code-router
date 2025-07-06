@@ -148,11 +148,114 @@ async function run(options: RunOptions = {}) {
 
   server.app.post("/v1/messages", async (req, res) => {
     try {
-      const provider = getProviderInstance(req.provider || "default");
-      const completion: any = await provider.chat.completions.create(req.body);
+      const providerConfig: ModelProvider | undefined = Providers.get(req.provider || "default");
+      if (!providerConfig) {
+        throw new Error(`Provider ${req.provider || "default"} not found`);
+      }
+
+      // Prepare fetch options with proxy support
+      const commonOptions = getOpenAICommonOptions();
+      const fetchOptions: RequestInit = {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${providerConfig.api_key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(req.body),
+      };
+
+      // Add proxy agent if available
+      if (commonOptions.httpAgent) {
+        // @ts-ignore - Node.js fetch supports agent option
+        fetchOptions.agent = commonOptions.httpAgent;
+      }
+
+      const apiUrl = `${providerConfig.api_base_url}/v1/chat/completions`;
+      log("Calling API:", apiUrl, "with options:", fetchOptions);
+      const response = await fetch(apiUrl, fetchOptions);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      // Handle streaming vs non-streaming responses
+      let completion: any;
+      if (req.body.stream) {
+        // For streaming, create an async iterable from the response
+        completion = {
+          async *[Symbol.asyncIterator]() {
+            const reader = response.body?.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            
+            if (!reader) {
+              throw new Error("No response body reader available");
+            }
+
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                  // Process any remaining data in buffer
+                  if (buffer.trim()) {
+                    const lines = buffer.split('\n');
+                    for (const line of lines) {
+                      if (line.trim() && line.startsWith('data: ')) {
+                        const data = line.slice(6).trim();
+                        if (data === '[DONE]') continue;
+                        
+                        try {
+                          const parsed = JSON.parse(data);
+                          yield parsed;
+                        } catch (e) {
+                          // Skip invalid JSON chunks
+                          continue;
+                        }
+                      }
+                    }
+                  }
+                  break;
+                }
+                
+                // Decode chunk and add to buffer
+                const chunk = decoder.decode(value, { stream: true });
+                buffer += chunk;
+                
+                // Process complete lines from buffer
+                const lines = buffer.split('\n');
+                // Keep the last potentially incomplete line in buffer
+                buffer = lines.pop() || '';
+                
+                // Process complete lines in order
+                for (const line of lines) {
+                  if (line.trim() && line.startsWith('data: ')) {
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+                    
+                    try {
+                      const parsed = JSON.parse(data);
+                      yield parsed;
+                    } catch (e) {
+                      // Skip invalid JSON chunks but log for debugging
+                      log("Failed to parse SSE data:", data, e);
+                      continue;
+                    }
+                  }
+                }
+              }
+            } finally {
+              reader.releaseLock();
+            }
+          }
+        };
+      } else {
+        // For non-streaming, parse the JSON response
+        completion = await response.json();
+      }
+
       await streamOpenAIResponse(res, completion, req.body.model, req.body);
     } catch (e) {
-      log("Error in OpenAI API call:", e);
+      log("Error in direct API call:", e);
     }
   });
   server.start();

@@ -149,13 +149,28 @@ export const formatRequest = async (
           return openAiMessagesFromThisAnthropicMessage;
         })
       : [];
-    const systemMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+    const systemMessages =
       Array.isArray(system)
         ? system.map((item) => ({
             role: "system",
-            content: item.text,
+            content: [
+              {
+                type: "text",
+                text: item.text,
+                cache_control: {"type": "ephemeral"}
+              }
+            ]
           }))
-        : [{ role: "system", content: system }];
+        : [{ 
+            role: "system", 
+            content: [
+              {
+                type: "text",
+                text: system,
+                cache_control: {"type": "ephemeral"}
+              }
+            ]
+          }];
     const data: any = {
       model,
       messages: [...systemMessages, ...openAIMessages],
@@ -179,11 +194,32 @@ export const formatRequest = async (
     }
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    
+    // Add cache_control to the last message
+    if (data.messages.length > 0) {
+      const lastMessage = data.messages[data.messages.length - 1];
+      if (typeof lastMessage.content === "string") {
+        lastMessage.content = [
+          {
+            type: "text",
+            text: lastMessage.content,
+            cache_control: {"type": "ephemeral"}
+          }
+        ];
+      } else if (Array.isArray(lastMessage.content)) {
+        // If content is already an array, add cache_control to the last text block
+        const lastContentBlock = lastMessage.content[lastMessage.content.length - 1];
+        if (lastContentBlock && lastContentBlock.type === "text") {
+          lastContentBlock.cache_control = {"type": "ephemeral"};
+        }
+      }
+    }
+    
     req.body = data;
-    console.log(JSON.stringify(data.messages, null, 2));
+    // console.log(JSON.stringify(data.messages, null, 2));
   } catch (error) {
     console.error("Error in request processing:", error);
-    const errorCompletion: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> =
+    const errorCompletion =
       {
         async *[Symbol.asyncIterator]() {
           yield {
